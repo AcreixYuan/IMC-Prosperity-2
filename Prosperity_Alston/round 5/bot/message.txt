@@ -1,0 +1,863 @@
+import json
+from typing import Dict, List, Any
+# from TradingAlgo.datamodel import OrderDepth, TradingState, Order, Symbol, Trade, Position
+from datamodel import OrderDepth, TradingState, Order, Symbol, Trade, Position, ProsperityEncoder
+import json
+import numpy as np
+
+
+class Logger:
+    def __init__(self) -> None:
+        self.logs = ""
+
+    def print(self, *objects: Any, sep: str = " ", end: str = "\n") -> None:
+        self.logs += sep.join(map(str, objects)) + end
+
+    def flush(self, state: TradingState, orders: dict[Symbol, list[Order]]) -> None:
+        print(json.dumps({
+            "state": self.compress_state(state),
+            "orders": self.compress_orders(orders),
+            "logs": self.logs,
+        }, cls=ProsperityEncoder, separators=(",", ":"), sort_keys=True))
+
+        self.logs = ""
+
+    def compress_state(self, state: TradingState) -> dict[str, Any]:
+        listings = []
+        for listing in state.listings.values():
+            listings.append([listing["symbol"], listing["product"], listing["denomination"]])
+
+        order_depths = {}
+        for symbol, order_depth in state.order_depths.items():
+            order_depths[symbol] = [order_depth.buy_orders, order_depth.sell_orders]
+
+        return {
+            "t": state.timestamp,
+            "l": listings,
+            "od": order_depths,
+            "ot": self.compress_trades(state.own_trades),
+            "mt": self.compress_trades(state.market_trades),
+            "p": state.position,
+            "o": state.observations,
+        }
+
+    def compress_trades(self, trades: dict[Symbol, list[Trade]]) -> list[list[Any]]:
+        compressed = []
+        for arr in trades.values():
+            for trade in arr:
+                compressed.append([
+                    trade.symbol,
+                    trade.buyer,
+                    trade.seller,
+                    trade.price,
+                    trade.quantity,
+                    trade.timestamp,
+                ])
+
+        return compressed
+
+    def compress_orders(self, orders: dict[Symbol, list[Order]]) -> list[list[Any]]:
+        compressed = []
+        for arr in orders.values():
+            for order in arr:
+                compressed.append([order.symbol, order.price, order.quantity])
+
+        return compressed
+
+logger = Logger()
+
+
+
+class ProductPriceUtility:
+    def __init__(self, symbol: str, MAXPOSITION: int):
+        self.bid_prices1 = np.array([]).astype("int16")
+        self.bid_prices2 = np.array([]).astype("int16")
+        self.bid_prices3 = np.array([]).astype("int16")
+        self.ask_prices1 = np.array([]).astype("int16")
+        self.ask_prices2 = np.array([]).astype("int16")
+        self.ask_prices3 = np.array([]).astype("int16")
+        self.bid_quantities1 = np.array([]).astype("int16")
+        self.bid_quantities2 = np.array([]).astype("int16")
+        self.bid_quantities3 = np.array([]).astype("int16")
+        self.ask_quantities1 = np.array([]).astype("int16")
+        self.ask_quantities2 = np.array([]).astype("int16")
+        self.ask_quantities3 = np.array([]).astype("int16")
+        self.average_prices = np.array([]).astype("int16")
+        self.average_bid_prices = np.array([]).astype("int16")
+        self.average_ask_prices = np.array([]).astype("int16")
+        self.average_spread = np.array([]).astype("int16")
+        self.positions = np.array([]).astype("int16")
+        self.MAXPOSITION = MAXPOSITION
+        self.credits = 0
+        self.buyorder = 0
+        self.sellorder = 0
+        self.length = 0
+
+        self.symbol = symbol
+
+    def ma(self, index: int, period: int):
+        if index < period:
+            return (self.average_prices[0:index]).mean()
+        else:
+            return np.mean(self.average_prices[index - period:index])
+
+    def ema(self, index: int, period: int) -> float:
+        if index < period - 1:
+            # There are not enough elements to compute the EMA yet
+            return np.nan
+
+        # Compute the smoothing factor (alpha)
+        alpha = 2 / (period + 1)
+
+        # Compute the initial EMA as the simple moving average of the first period elements
+        initial_ema = np.mean(self.average_prices[index - period + 1: index + 1])
+
+        if index == period - 1:
+            # Special case for the first EMA
+            return initial_ema
+
+        # Compute the subsequent EMAs iteratively
+        ema = initial_ema
+        for i in range(index - period + 1, index + 1):
+            ema = alpha * self.average_prices[i] + (1 - alpha) * ema
+
+        return ema
+
+        # Compute the subsequent EMAs recursively
+        prev_ema = self.ema(index - 1, period)
+        ema = alpha * self.average_prices[index] + (1 - alpha) * prev_ema
+
+        return round(ema)
+
+    # takes in an index which is basically just timestamp/100
+    def vwap(self, index: int):
+
+        total_value_traded = 0
+        total_volume_traded = 0
+
+        # if (index == 13):
+        # print(
+        # f"bid prices 1: {self.bid_prices1} bid quantities 1: {self.bid_quantities1} bid prices 2: {self.bid_prices2} bid quantities 2: {self.bid_quantities2} bid prices 3: {self.bid_prices3} bid quantities 3: {self.bid_quantities3}")
+        # Calculate total value and volume traded for bid prices
+        if len(self.bid_prices1) > index and not np.isnan(self.bid_prices1[index]) and not np.isnan(
+                self.bid_quantities1[index]):
+            total_value_traded += self.bid_prices1[index] * abs(self.bid_quantities1[index])
+            total_volume_traded += abs(self.bid_quantities1[index])
+        if len(self.bid_prices2) > index and not np.isnan(self.bid_prices2[index]) and not np.isnan(
+                self.bid_quantities2[index]):
+            total_value_traded += self.bid_prices2[index] * abs(self.bid_quantities2[index])
+            total_volume_traded += abs(self.bid_quantities2[index])
+        if len(self.bid_prices3) > index and not np.isnan(self.bid_prices3[index]) and not np.isnan(
+                self.bid_quantities3[index]):
+            total_value_traded += self.bid_prices3[index] * abs(self.bid_quantities3[index])
+            total_volume_traded += abs(self.bid_quantities3[index])
+
+        # Calculate total value and volume traded for ask prices
+        if len(self.ask_prices1) > index and not np.isnan(self.ask_prices1[index]) and not np.isnan(
+                self.ask_quantities1[index]):
+            total_value_traded += self.ask_prices1[index] * abs(self.ask_quantities1[index])
+            total_volume_traded += abs(self.ask_quantities1[index])
+        if len(self.ask_prices2) > index and not np.isnan(self.ask_prices2[index]) and not np.isnan(
+                self.ask_quantities2[index]):
+            total_value_traded += self.ask_prices2[index] * abs(self.ask_quantities2[index])
+            total_volume_traded += abs(self.ask_quantities2[index])
+        if len(self.ask_prices3) > index and not np.isnan(self.ask_prices3[index]) and not np.isnan(
+                self.ask_quantities3[index]):
+            total_value_traded += self.ask_prices3[index] * abs(self.ask_quantities3[index])
+            total_volume_traded += abs(self.ask_quantities3[index])
+        # index % 10 == 0:
+        # print(f"time: {index * 100} the ask1 {self.ask_prices1} ask 2 {self.ask_prices2} ask 3 {self.ask_prices3} and the bid1 {self.bid_prices1} bid 2 {self.bid_prices2} bid 3 {self.bid_prices3} and the ask quantity1 {self.ask_quantities1} the ask quantity2 {self.ask_quantities2} ask quantity3 {self.ask_quantities3} bid quantities1 {self.bid_quantities1}
+        # Calculate VWAP
+        if total_volume_traded > 0:
+            vwap = total_value_traded / total_volume_traded
+            return vwap
+        else:
+            return (self.ask_prices1[index] + self.bid_prices1[index]) / 2
+
+    def update(self, state: TradingState):
+        symbol = self.symbol
+        bid_prices = list(state.order_depths[symbol].buy_orders.keys())
+        ask_prices = list(state.order_depths[symbol].sell_orders.keys())
+        bid_quantities = list(state.order_depths[symbol].buy_orders.values())
+        ask_quantities = list(state.order_depths[symbol].sell_orders.values())
+
+        if len(bid_prices) >= 1:
+            self.bid_prices1 = np.append(self.bid_prices1, bid_prices[0])
+            self.bid_quantities1 = np.append(self.bid_quantities1, bid_quantities[0])
+        else:
+            self.bid_prices1 = np.append(self.bid_prices1, np.nan)
+            self.bid_quantities1 = np.append(self.bid_quantities1, np.nan)
+
+        if len(bid_prices) >= 2:
+            self.bid_prices2 = np.append(self.bid_prices2, bid_prices[1])
+            self.bid_quantities2 = np.append(self.bid_quantities2, bid_quantities[1])
+        else:
+            self.bid_prices2 = np.append(self.bid_prices2, np.nan)
+            self.bid_quantities2 = np.append(self.bid_quantities2, np.nan)
+
+        if len(bid_prices) == 3:
+            self.bid_prices3 = np.append(self.bid_prices3, bid_prices[2])
+            self.bid_quantities3 = np.append(self.bid_quantities3, bid_quantities[2])
+        else:
+            self.bid_prices3 = np.append(self.bid_prices3, np.nan)
+            self.bid_quantities3 = np.append(self.bid_quantities3, np.nan)
+
+        if len(ask_prices) >= 1:
+            self.ask_prices1 = np.append(self.ask_prices1, ask_prices[0])
+            self.ask_quantities1 = np.append(self.ask_quantities1, ask_quantities[0])
+        else:
+            self.ask_prices1 = np.append(self.ask_prices1, np.nan)
+            self.ask_quantities1 = np.append(self.ask_quantities1, np.nan)
+
+        if len(ask_prices) >= 2:
+            self.ask_prices2 = np.append(self.ask_prices2, ask_prices[1])
+            self.ask_quantities2 = np.append(self.ask_quantities2, ask_quantities[1])
+        else:
+            self.ask_prices2 = np.append(self.ask_prices2, np.nan)
+            self.ask_quantities2 = np.append(self.ask_quantities2, np.nan)
+
+        if len(ask_prices) == 3:
+            self.ask_prices3 = np.append(self.ask_prices3, ask_prices[2])
+            self.ask_quantities3 = np.append(self.ask_quantities3, ask_quantities[2])
+        else:
+            self.ask_prices3 = np.append(self.ask_prices3, np.nan)
+            self.ask_quantities3 = np.append(self.ask_quantities3, np.nan)
+
+        index = len(self.ask_prices1) - 1
+
+        bid_prices = np.nan_to_num([self.bid_prices1[index], self.bid_prices2[index], self.bid_prices3[index]])
+        bid_quantities = np.nan_to_num(
+            [self.bid_quantities1[index], self.bid_quantities2[index], self.bid_quantities3[index]])
+
+        total_bid_quantity = sum(bid_quantities)
+        if total_bid_quantity == 0:
+            # No bids at this index
+            self.average_bid_prices = np.append(self.average_bid_prices, np.nan)
+
+        weighted_bid_prices = [bid_prices[i] * bid_quantities[i] for i in range(3)]
+        average_bid_price = sum(weighted_bid_prices) / total_bid_quantity
+        self.average_bid_prices = np.append(self.average_bid_prices, average_bid_price)
+
+        ask_prices = np.nan_to_num([self.ask_prices1[index], self.ask_prices2[index], self.ask_prices3[index]])
+        ask_quantities = np.nan_to_num(
+            [self.ask_quantities1[index], self.ask_quantities2[index], self.ask_quantities3[index]])
+
+        total_ask_quantity = sum(ask_quantities)
+        if total_ask_quantity == 0:
+            # No asks at this index
+            self.average_ask_prices = np.append(self.average_ask_prices, np.nan)
+
+        weighted_ask_prices = [ask_prices[i] * ask_quantities[i] for i in range(3)]
+        average_ask_price = sum(weighted_ask_prices) / total_ask_quantity
+        self.average_ask_prices = np.append(self.average_ask_prices, average_ask_price)
+
+        self.average_prices = np.append(self.average_prices,
+                                        (self.average_ask_prices[index] + self.average_bid_prices[index]) / 2)
+        self.average_spread = np.append(self.average_spread,
+                                        self.average_ask_prices[index] - self.average_bid_prices[index])
+
+        if symbol in state.position:
+            self.positions = np.append(self.positions, state.position[symbol])
+        else:
+            self.positions = np.append(self.positions, 0)
+
+        if self.positions[index] != self.positions[index - 1]:
+            if symbol in state.own_trades:
+                debug = ""
+                for trade in state.own_trades[symbol]:
+                    if trade.buyer == "SUBMISSION":
+                        self.buyorder += trade.quantity
+                        self.credits -= trade.quantity * trade.price
+                        debug += f" BUY {trade.quantity} {symbol} at {trade.price} "
+                    elif trade.seller == "SUBMISSION":
+                        self.sellorder += trade.quantity
+                        self.credits += trade.quantity * trade.price
+                        debug += f" SELL {trade.quantity} {symbol} at {trade.price} "
+                # print(debug)
+
+        self.length += 1
+
+    def pnl(self) -> int:
+        return self.credits + self.positions[-1] * self.average_prices[-1]
+
+
+class Trader:
+
+    def __init__(self):
+        self.last_olivia_trade = None
+        self.window_size = 5
+
+        self.banana_utility = ProductPriceUtility("BANANAS", 20)
+        self.pearl_utility = ProductPriceUtility("PEARLS", 20)
+
+        self.coconut_utility = ProductPriceUtility("COCONUTS", 600)
+        self.pina_utility = ProductPriceUtility("PINA_COLADAS", 300)
+
+        self.berry_utility = ProductPriceUtility("BERRIES", 250)
+        self.diving_utility = ProductPriceUtility("DIVING_GEAR", 50)
+
+        self.baguette_utility = ProductPriceUtility("BAGUETTE", 150)
+        self.dip_utility = ProductPriceUtility("DIP", 300)
+        self.ukulele_utility = ProductPriceUtility("UKULELE", 70)
+        self.picnic_utility = ProductPriceUtility("PICNIC_BASKET", 70)
+
+        # optimal inventory risk for BANANAS is 0.12+-0.01 at full spread (1049)
+        # optimal inventory risk for PEARLS is 0 at full spread (1522)
+        self.inventory_risk = 0.00
+        self.banana_spread = 0.7
+        # optimal spread for PEARLS is 3 at 0 inventory risk management (1522) most likely already optimal, focus on bananas instead
+        self.pearls_spread = 3
+        self.max_inventory_reached = 0
+        # 0.5320379, 0.5337991929859659, .533999013632371
+        self.price_corrolation = 0.533325
+        self.dolphins = np.array([]).astype("int16")
+        self.picnic_premium = np.array([]).astype("int16")
+        self.dolphins_rush = False
+        self.dolphins_decline = False
+        self.duration = 0
+        self.position_opened = False
+        self.picnic_long = False
+        self.picnic_short = False
+        self.baguette_short = False
+        self.baguette_long = False
+        self.dip_short = False
+        self.dip_long = False
+        self.ukulele_short = False
+        self.ukulele_long = False
+
+        self.olivia_takeover_pina = None
+        self.olivia_takeover_coconut = None
+        self.olivia_takeover_berry = None
+        self.olivia_takeover_diving = None
+        self.olivia_takeover_baguette = None
+        self.olivia_takeover_dip = None
+        self.olivia_takeover_ukulele = None
+        self.olivia_takeover_picnic = None
+
+
+        self.order_completion = 0
+        # print("Trader Initialized------------------------------------------------------------------")
+
+    def run(self, state: TradingState) -> Dict[str, List[Order]]:
+        result = {}
+        self.banana_utility.update(state)
+        self.pearl_utility.update(state)
+        self.pina_utility.update(state)
+        self.coconut_utility.update(state)
+        self.berry_utility.update(state)
+        self.diving_utility.update(state)
+        self.baguette_utility.update(state)
+        self.dip_utility.update(state)
+        self.ukulele_utility.update(state)
+        self.picnic_utility.update(state)
+
+
+        self.dolphins = np.append(self.dolphins, state.observations["DOLPHIN_SIGHTINGS"])
+
+        result["BANANAS"] = self.vwap(state, "BANANAS", 0, self.banana_utility)
+        result["PEARLS"] = self.vwap(state, "PEARLS", 0, self.pearl_utility)
+        result["COCONUTS"] = self.vwap(state, "COCONUTS", 0, self.coconut_utility)
+        result["PINA_COLADAS"] = self.vwap(state, "PINA_COLADAS", 0, self.pina_utility)
+        result["BERRIES"] = self.vwap(state, "BERRIES", 0, self.berry_utility)
+        result["DIVING_GEAR"] = self.vwap(state, "DIVING_GEAR", 0, self.diving_utility)
+
+
+        result["BAGUETTE"] = self.vwap(state, "BAGUETTE", 0, self.baguette_utility)
+        result["DIP"] = self.vwap(state, "DIP", 0, self.dip_utility)
+        result["UKULELE"] = self.vwap(state, "UKULELE", 0, self.ukulele_utility)
+
+        result["PICNIC_BASKET"] = self.vwap(state, "PICNIC_BASKET", 0, self.picnic_utility)
+
+        # printing results
+        #logger.flush(state, result)
+
+
+
+        return result
+
+    def get_trade_with_olivia(self, market_trades):
+        for product in market_trades:
+            for trade in market_trades[product]:
+                if trade.buyer == "Olivia" or trade.seller == "Olivia":
+                    if self.last_olivia_trade is None:
+                        self.last_olivia_trade = trade
+                        return trade
+                    if trade != self.last_olivia_trade:
+                        self.last_olivia_trade = trade
+                        return trade
+        return None
+
+
+
+    def vwap(self, state: TradingState, symbol: str, threshold: int, utility: ProductPriceUtility) -> List[Order]:
+        """
+        Takes a TradingState as input, and outputs a dictionary of Orders to be placed.
+        """
+        index = utility.length - 1
+
+        if self.get_trade_with_olivia(state.market_trades) is not None:
+            gold = self.get_trade_with_olivia(state.market_trades)
+            if gold.buyer == "Olivia" and gold.symbol == "PICNIC_BASKET":
+                self.olivia_takeover_picnic = True
+            if gold.buyer == "Olivia" and gold.symbol == "BAGUETTE":
+                self.olivia_takeover_baguette = True
+            if gold.buyer == "Olivia" and gold.symbol == "DIP":
+                self.olivia_takeover_dip = True
+            if gold.buyer == "Olivia" and gold.symbol == "UKULELE":
+                self.olivia_takeover_ukulele = True
+            if gold.buyer == "Olivia" and gold.symbol == "PINA_COLADAS":
+                self.olivia_takeover_pina = True
+            if gold.buyer == "Olivia" and gold.symbol == "COCONUTS":
+                self.olivia_takeover_coconut = True
+            if gold.buyer == "Olivia" and gold.symbol == "BERRIES":
+                self.olivia_takeover_berry = True
+            if gold.buyer == "Olivia" and gold.symbol == "DIVING_GEAR":
+                self.olivia_takeover_diving = True
+
+
+            if gold.seller == "Olivia" and gold.symbol == "BAGUETTE":
+                self.olivia_takeover_baguette = False
+            if gold.seller == "Olivia" and gold.symbol == "DIP":
+                self.olivia_takeover_dip = False
+            if gold.seller == "Olivia" and gold.symbol == "UKULELE":
+                self.olivia_takeover_ukulele = False
+            if gold.seller == "Olivia" and gold.symbol == "PICNIC_BASKET":
+                self.olivia_takeover_picnic = False
+            if gold.seller == "Olivia" and gold.symbol == "PINA_COLADAS":
+                self.olivia_takeover_pina = False
+            if gold.seller == "Olivia" and gold.symbol == "COCONUTS":
+                self.olivia_takeover_coconut = False
+            if gold.seller == "Olivia" and gold.symbol == "BERRIES":
+                self.olivia_takeover_berry = False
+            if gold.seller == "Olivia" and gold.symbol == "DIVING_GEAR":
+                self.olivia_takeover_diving = False
+
+
+            #print(gold)
+
+        # Calculate the simple moving average of the last x prices
+        vwap = round(utility.vwap(index))
+        if symbol == "PEARLS":
+            vwap = 10000
+
+        # Get the best bid and ask prices from the order depths for the given symbol
+        best_bid = max(state.order_depths[symbol].buy_orders.keys())
+        best_ask = min(state.order_depths[symbol].sell_orders.keys())
+        order = []
+
+        omega = 1000
+        alpha = 0.25
+
+
+
+        if symbol == "DIVING_GEAR":
+            if self.olivia_takeover_diving is not None:
+                print("OLIVIA TAKEOVER DIVING")
+                print(self.last_olivia_trade)
+                if self.olivia_takeover_diving:
+                    order += self.smartBuyOrder(state, symbol, 50, best_ask, utility)
+                    print("BUYING DIVING GEAR")
+                    return order
+                else:
+                    order += self.smartSellOrder(state, symbol, 50, best_bid, utility)
+                    print("SELLING DIVING GEAR")
+                    return order
+            print("NOT TAKING OVER DIVING GEAR")
+
+            positional_trigger = 6
+            if self.dolphins.size > 3:
+                if self.dolphins[-1] - self.dolphins[-4] > positional_trigger:
+                    self.dolphins_rush = True
+                    self.dolphins_decline = False
+                elif self.dolphins[-1] - self.dolphins[-4] < -positional_trigger:
+                    self.dolphins_decline = True
+                    self.dolphins_rush = False
+            maxtime = 550
+            if self.dolphins_rush:
+                order += self.smartBuyOrder(state, symbol, 50, best_ask, utility)
+                self.duration += 1
+                if self.duration > maxtime:
+                    self.dolphins_rush = False
+                    self.duration = 0
+            elif self.dolphins_decline:
+                order += self.smartSellOrder(state, symbol, 50, best_bid, utility)
+                self.duration += 1
+                if self.duration > maxtime:
+                    self.dolphins_decline = False
+                    self.duration = 0
+
+        if symbol == "BANANAS" or "PEARLS":
+            #return order
+            if best_ask < vwap:
+                order = self.smartBuyOrder(state, symbol, 100, best_ask, utility)
+            if best_bid > vwap:
+                order = self.smartSellOrder(state, symbol, 100, best_bid, utility)
+
+        if symbol == "COCONUTS":
+            if self.olivia_takeover_coconut is not None:
+                print("OLIVIA TAKEOVER COCONUT")
+                print(self.last_olivia_trade)
+                if self.olivia_takeover_coconut:
+                    print("BUYING COCONUT")
+                    order += self.smartBuyOrder(state, symbol, 50, best_ask, utility)
+                    return order
+                else:
+                    print("SELLING COCONUT")
+                    order += self.smartSellOrder(state, symbol, 50, best_bid, utility)
+                    return order
+            print("NOT TAKING OVER COCONUT")
+            #return order
+            position = utility.positions[index]
+
+            price_ratio = utility.average_prices[index] / self.pina_utility.average_prices[index]
+            ratio_diff = price_ratio - self.price_corrolation
+            favorable_position = max(-utility.MAXPOSITION * ratio_diff * omega, -utility.MAXPOSITION)
+            target_order_position = favorable_position - position
+
+            if abs(target_order_position / utility.MAXPOSITION) < alpha:
+                return order
+            if target_order_position > 0:
+                order += self.smartBuyOrder(state, symbol, target_order_position, best_ask, utility)
+            elif target_order_position < 0:
+                order += self.smartSellOrder(state, symbol, -target_order_position, best_bid, utility)
+
+        if symbol == "PINA_COLADAS":
+            if self.olivia_takeover_pina is not None:
+                print("OLIVIA TAKEOVER PINA")
+                print(self.last_olivia_trade)
+                if self.olivia_takeover_pina:
+                    print("BUYING PINA")
+                    order += self.smartBuyOrder(state, symbol, 50, best_ask, utility)
+                    return order
+                else:
+                    print("SELLING PINA")
+                    order += self.smartSellOrder(state, symbol, 50, best_bid, utility)
+                    return order
+            print("NOT TAKING OVER PINA")
+            #return order
+            position = utility.positions[index]
+            price_ratio = self.coconut_utility.average_prices[index] / utility.average_prices[index]
+            ratio_diff = price_ratio - self.price_corrolation
+            favorable_position = min(utility.MAXPOSITION * ratio_diff * omega, utility.MAXPOSITION)
+            target_order_position = favorable_position - position
+            if abs(target_order_position / utility.MAXPOSITION) < alpha:
+                return order
+            if target_order_position > 0:
+                order += self.smartBuyOrder(state, symbol, target_order_position, best_ask, utility)
+            elif target_order_position < 0:
+                order += self.smartSellOrder(state, symbol, -target_order_position, best_bid, utility)
+
+        if symbol == "BERRIES":
+            #return order
+            if self.olivia_takeover_berry is not None:
+                print("OLIVIA TAKEOVER BERRY")
+                print(self.last_olivia_trade)
+                if self.olivia_takeover_berry:
+                    print("BUYING BERRY")
+                    order += self.smartBuyOrder(state, symbol, 50, best_ask, utility)
+                    return order
+                else:
+                    print("SELLING BERRY")
+                    order += self.smartSellOrder(state, symbol, 50, best_bid, utility)
+                    return order
+            print("NOT TAKING OVER BERRY")
+            if state.timestamp < 125000:
+                order += self.smartSellOrder(state, symbol, 100, best_bid, utility)
+            if 500000 > state.timestamp > 125000:
+                order += self.smartBuyOrder(state, symbol, 100, best_ask, utility)
+            if state.timestamp > 500000:
+                order += self.smartSellOrder(state, symbol, 100, best_bid, utility)
+
+        if symbol == "BAGUETTE":
+
+            if self.olivia_takeover_baguette is not None:
+                print("OLIVIA TAKEOVER BAGUETTE")
+                print(self.last_olivia_trade)
+                if self.olivia_takeover_baguette:
+                    print("BUYING BAGUETTE")
+                    order += self.smartBuyOrder(state, symbol, 50, best_ask, utility)
+                    return order
+                else:
+                    print("SELLING BAGUETTE")
+                    order += self.smartSellOrder(state, symbol, 50, best_bid, utility)
+                    return order
+            print("NOT TAKING OVER BAGUETTE")
+
+
+        if symbol == "DIP":
+            if self.olivia_takeover_dip is not None:
+                print("OLIVIA TAKEOVER DIP")
+                print(self.last_olivia_trade)
+                if self.olivia_takeover_dip:
+                    print("BUYING DIP")
+                    order += self.smartBuyOrder(state, symbol, 50, best_ask, utility)
+                    return order
+                else:
+                    print("SELLING DIP")
+                    order += self.smartSellOrder(state, symbol, 50, best_bid, utility)
+                    return order
+            print("NOT TAKING OVER DIP")
+
+
+        if symbol == "UKULELE":
+            if self.olivia_takeover_ukulele is not None:
+                print("OLIVIA TAKEOVER UKULELE")
+                print(self.last_olivia_trade)
+                if self.olivia_takeover_ukulele:
+                    print("BUYING UKULELE")
+                    order += self.smartBuyOrder(state, symbol, 50, best_ask, utility)
+                    return order
+                else:
+                    print("SELLING UKULELE")
+                    order += self.smartSellOrder(state, symbol, 50, best_bid, utility)
+                    return order
+            print("NOT TAKING OVER UKULELE")
+
+
+        if symbol == "PICNIC_BASKET":
+            if self.olivia_takeover_picnic is not None:
+                print("OLIVIA TAKEOVER PICNIC")
+                print(self.last_olivia_trade)
+                if self.olivia_takeover_picnic:
+                    print("BUYING PICNIC")
+                    order += self.smartBuyOrder(state, symbol, 50, best_ask, utility)
+                    return order
+                else:
+                    print("SELLING PICNIC")
+                    order += self.smartSellOrder(state, symbol, 50, best_bid, utility)
+                    return order
+            print("NOT TAKING OVER PICNIC")
+            dip_price = self.dip_utility.average_prices[index]
+            baguette_price = self.baguette_utility.average_prices[index]
+            ukulele_price = self.ukulele_utility.average_prices[index]
+            comp_price = (4*dip_price + 2*baguette_price + ukulele_price)
+            mid_price = (best_bid + best_ask) / 2
+            diff = mid_price - comp_price
+            self.picnic_premium = np.append(self.picnic_premium, diff)
+
+            combination_cost = 375.33
+            margin = combination_cost/4.5
+            fair_price = comp_price + combination_cost
+            if best_ask < fair_price - margin:
+                order += self.smartBuyOrder(state, symbol, 100, best_ask, utility)
+                self.picnic_long = True
+                if self.picnic_short:
+                    self.picnic_short = False
+                    self.order_completion += 1
+            if best_bid > fair_price + margin:
+                order += self.smartSellOrder(state, symbol, 100, best_bid, utility)
+                self.picnic_short = True
+                if self.picnic_long:
+                    self.picnic_long = False
+                    self.order_completion += 1
+
+       # if index > 9990:
+         #   print(np.average(self.picnic_premium))
+         #   print(np.std(self.picnic_premium))
+
+        #if index % 20 == 0:
+        #    print(self.order_completion)
+
+        if len(order) > 0:
+            return order
+        if symbol == "BANANAS" or symbol == "PEARLS":
+            order += self.marketMaker(state, symbol, utility, threshold)
+
+        return order
+
+    # very bad market make method, needs improvement
+    def marketMaker(self, state: TradingState, symbol: str, utility: ProductPriceUtility, threshold: int) -> List[
+        Order]:
+        order = []
+        index = utility.length - 1
+        best_bid = max(state.order_depths[symbol].buy_orders.keys())
+        best_ask = min(state.order_depths[symbol].sell_orders.keys())
+
+        ask_spread = 0
+        bid_spread = 0
+        price_adjusted_for_inventory = utility.average_prices[index]  # - utility.positions[index] * self.inventory_risk
+        if symbol == "BANANAS":
+            ask = round(price_adjusted_for_inventory + utility.average_spread[index] / 2 * self.banana_spread)
+            bid = round(price_adjusted_for_inventory - utility.average_spread[index] / 2 * self.banana_spread)
+            if ask < best_ask - 1:
+                ask = best_ask - 1
+            if bid > best_bid + 1:
+                bid = best_bid + 1
+
+        if symbol == "COCONUTS":
+            return order
+        # ask = round(price_adjusted_for_inventory + utility.average_spread[index] / 2)
+        # bid = round(price_adjusted_for_inventory - utility.average_spread[index] / 2)
+        # ask -= 1
+        # bid += 1
+
+        if symbol == "PINA_COLADAS":
+            return order
+        # ask = round(price_adjusted_for_inventory + utility.average_spread[index] / 2)
+        # bid = round(price_adjusted_for_inventory - utility.average_spread[index] / 2)
+        # ask -= 1
+        # bid += 1
+
+        if symbol == "PEARLS":
+            ask = 10000 + self.pearls_spread
+            bid = 10000 - self.pearls_spread
+
+            if ask < best_ask:
+                ask = best_ask - 1
+            if bid > best_bid:
+                bid = best_bid + 1
+
+            if utility.positions[index] == utility.MAXPOSITION:
+                ask = 10000
+                bid = 10000 - self.pearls_spread
+            if utility.positions[index] == -utility.MAXPOSITION:
+                ask = 10000 + self.pearls_spread
+                bid = 10000
+            # print()
+
+        if symbol == "BERRIES":
+            ask = round(price_adjusted_for_inventory + utility.average_spread[index] / 2)
+            bid = round(price_adjusted_for_inventory - utility.average_spread[index] / 2)
+
+
+        order.append(
+            Order(symbol=symbol, price=ask + ask_spread, quantity=-utility.MAXPOSITION - int(utility.positions[index])))
+        order.append(
+            Order(symbol=symbol, price=bid - bid_spread, quantity=utility.MAXPOSITION - int(utility.positions[index])))
+
+        # if ask != best_ask:
+        # print(f"ask: {ask} best_ask: {best_ask} at {index}")
+        # if bid != best_bid:
+        # print(f"bid: {bid} best_bid: {best_bid} at {index}")
+
+        # print("Placing SELL", str(-20 - utility.positions[index]) + "x", bid)
+        # print("Placing BUY", str(20 - utility.positions[index]) + "x", ask)
+        return order
+
+    def smartSellOrder(self, state: TradingState, symbol: str, quantityLimit: int, pricelimit: int,
+                       utility: ProductPriceUtility) -> List[Order]:
+        order = []
+        index = utility.length - 1
+        # Retrieve the current buy orders in the order depth
+        best_bid = max(state.order_depths[symbol].buy_orders.keys())
+
+        bid_spread = 0
+        price_adjusted_for_inventory = utility.average_prices[index] - utility.positions[index] * self.inventory_risk
+        bid = round(price_adjusted_for_inventory - utility.average_spread[index] / 2 * self.banana_spread)
+        if symbol == "BANANAS":
+            if bid > best_bid + 1:
+                bid = best_bid + 1
+            order.append(
+                Order(symbol=symbol, price=pricelimit, quantity=-utility.MAXPOSITION - int(utility.positions[index])))
+            order.append(Order(symbol=symbol, price=bid - bid_spread,
+                               quantity=utility.MAXPOSITION - int(utility.positions[index])))
+        if symbol == "PEARLS":
+            bid = 10000 - self.pearls_spread
+            if bid > best_bid:
+                bid = best_bid + 1
+            order.append(
+                Order(symbol=symbol, price=pricelimit, quantity=-utility.MAXPOSITION - int(utility.positions[index])))
+            order.append(Order(symbol=symbol, price=bid - bid_spread,
+                               quantity=utility.MAXPOSITION - int(utility.positions[index])))
+
+        if symbol == "COCONUTS" or symbol == "PINA_COLADAS":
+            if len(state.order_depths[symbol].buy_orders.keys()) > 1:
+                best_bid = max(state.order_depths[symbol].buy_orders.keys())
+                order.append(Order(symbol=symbol, price=best_bid,
+                                   quantity=max(-utility.MAXPOSITION - int(utility.positions[index]), -quantityLimit)))
+            # print()
+        if symbol == "BERRIES":
+            best_bid = max(state.order_depths[symbol].buy_orders.keys())
+            order.append(Order(symbol=symbol, price=best_bid,
+                               quantity=max(-utility.MAXPOSITION - int(utility.positions[index]), -quantityLimit)))
+        if symbol == "DIVING_GEAR":
+            best_bid = max(state.order_depths[symbol].buy_orders.keys())
+            order.append(Order(symbol=symbol, price=best_bid,
+                               quantity=max(-utility.MAXPOSITION - int(utility.positions[index]), -quantityLimit)))
+
+        if symbol == "PICNIC_BASKET":
+            best_bid = max(state.order_depths[symbol].buy_orders.keys())
+            order.append(Order(symbol=symbol, price=best_bid,
+                               quantity=max(-utility.MAXPOSITION - int(utility.positions[index]), -quantityLimit)))
+
+
+        if symbol == "BAGUETTE":
+            best_bid = max(state.order_depths[symbol].buy_orders.keys())
+            order.append(Order(symbol=symbol, price=best_bid,
+                               quantity=max(-utility.MAXPOSITION - int(utility.positions[index]), -quantityLimit)))
+
+        if symbol == "DIP":
+            best_bid = max(state.order_depths[symbol].buy_orders.keys())
+            order.append(Order(symbol=symbol, price=best_bid,
+                               quantity=max(-utility.MAXPOSITION - int(utility.positions[index]), -quantityLimit)))
+
+        if symbol == "UKULELE":
+            best_bid = max(state.order_depths[symbol].buy_orders.keys())
+            order.append(Order(symbol=symbol, price=best_bid,
+                               quantity=max(-utility.MAXPOSITION - int(utility.positions[index]), -quantityLimit)))
+
+        # print("Matched SELL", str(abs(-20 - utility.positions[index])) + "x", pricelimit)
+        return order
+
+    # buys as many as possible until either price limit is reached or amountLimit is reached
+    def smartBuyOrder(self, state: TradingState, symbol: str, quantityLimit: int, pricelimit: int,
+                      utility: ProductPriceUtility) -> List[Order]:
+        order = []
+        index = utility.length - 1
+        # Retrieve the current sell orders in the order depth
+        best_ask = min(state.order_depths[symbol].sell_orders.keys())
+
+        ask_spread = 0
+        price_adjusted_for_inventory = utility.average_prices[index] - utility.positions[index] * self.inventory_risk
+        ask = round(price_adjusted_for_inventory + utility.average_spread[index] / 2 * self.banana_spread)
+        if symbol == "BANANAS":
+            if ask < best_ask - 1:
+                ask = best_ask - 1
+            order.append(
+                Order(symbol=symbol, price=pricelimit, quantity=utility.MAXPOSITION - int(utility.positions[index])))
+            order.append(Order(symbol=symbol, price=ask + ask_spread,
+                               quantity=-utility.MAXPOSITION - int(utility.positions[index])))
+        if symbol == "PEARLS":
+            ask = 10000 + self.pearls_spread
+            if ask < best_ask:
+                ask = best_ask - 1
+            order.append(
+                Order(symbol=symbol, price=pricelimit, quantity=utility.MAXPOSITION - int(utility.positions[index])))
+            order.append(Order(symbol=symbol, price=ask + ask_spread,
+                               quantity=-utility.MAXPOSITION - int(utility.positions[index])))
+        if symbol == "COCONUTS" or symbol == "PINA_COLADAS":
+            if len(state.order_depths[symbol].sell_orders.keys()) > 1:
+                best_ask = min(state.order_depths[symbol].sell_orders.keys())
+                order.append(Order(symbol=symbol, price=best_ask,
+                                   quantity=min(utility.MAXPOSITION - int(utility.positions[index]), quantityLimit)))
+
+        if symbol == "BERRIES":
+            best_ask = min(state.order_depths[symbol].sell_orders.keys())
+            order.append(Order(symbol=symbol, price=best_ask,
+                               quantity=min(utility.MAXPOSITION - int(utility.positions[index]), quantityLimit)))
+        if symbol == "DIVING_GEAR":
+            best_ask = min(state.order_depths[symbol].sell_orders.keys())
+            order.append(Order(symbol=symbol, price=best_ask,
+                               quantity=min(utility.MAXPOSITION - int(utility.positions[index]), quantityLimit)))
+
+        if symbol == "PICNIC_BASKET":
+            best_ask = min(state.order_depths[symbol].sell_orders.keys())
+            order.append(Order(symbol=symbol, price=best_ask,
+                               quantity=min(utility.MAXPOSITION - int(utility.positions[index]), quantityLimit)))
+
+        if symbol == "BAGUETTE":
+            best_ask = min(state.order_depths[symbol].sell_orders.keys())
+            order.append(Order(symbol=symbol, price=best_ask,
+                               quantity=min(utility.MAXPOSITION - int(utility.positions[index]), quantityLimit)))
+
+        if symbol == "DIP":
+            best_ask = min(state.order_depths[symbol].sell_orders.keys())
+            order.append(Order(symbol=symbol, price=best_ask,
+                               quantity=min(utility.MAXPOSITION - int(utility.positions[index]), quantityLimit)))
+
+        if symbol == "UKULELE":
+            best_ask = min(state.order_depths[symbol].sell_orders.keys())
+            order.append(Order(symbol=symbol, price=best_ask,
+                               quantity=min(utility.MAXPOSITION - int(utility.positions[index]), quantityLimit)))
+
+        return order
