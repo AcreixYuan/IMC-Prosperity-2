@@ -1,4 +1,4 @@
-#score 2.420; 30,452
+#score 2.420
 #quick description: we are using the ema for the am, and we are using an 90 10 split for the parameters, varying the N parameter to 20 
 alpha1 = 1.0;alpha2 =  0.1;N1 = 20;N2 = 30
 
