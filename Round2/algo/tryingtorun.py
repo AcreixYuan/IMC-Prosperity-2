@@ -50,7 +50,7 @@ class Trader:
  
         self.fair_bid = self.bidPrice - self.transportFees + self.exportTariff  
         self.fair_ask = self.askPrice + self.transportFees - self.importTariff
-        
+        conversions = 1
         order_depth: OrderDepth = state.order_depths["ORCHIDS"]
         orders: List[Order] = []
         product = "ORCHIDS"
@@ -59,7 +59,8 @@ class Trader:
             if int(best_ask) < self.fair_bid:
                 print("BUY", str(-best_ask_amount) + "x", best_ask)
                 orders.append(Order("ORCHIDS", best_ask, -best_ask_amount))
-        conversions = best_ask_amount
+        	
+            conversions = best_ask_amount
         
         """
 
