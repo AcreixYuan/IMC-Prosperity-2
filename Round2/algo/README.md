@@ -5,6 +5,7 @@
 
 2. Calibrate a Vector Auto Regression Model
 
-3. Try to use a kalman filter
-
 4. Use random forest
+
+5. Calculate supply signal and calculate cointegration or lag in cointegration
+6. 
