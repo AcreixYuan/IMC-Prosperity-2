@@ -1,4 +1,4 @@
-from datamodel import OrderDepth, UserId, TradingState, Order
+from datamodel import OrderDepth, UserId, TradingState, Order, Observation, ConversionObservation
 from typing import List
 import string
 
@@ -9,16 +9,20 @@ class Trader:
         # Only method required. It takes all buy and sell orders for all symbols as an input, and outputs a list of orders to be sent
         print("traderData: " + state.traderData)
         print("Observations: " + str(state.observations))
+        observations = state.observations
         result = {}
         for product in state.order_depths:
             order_depth: OrderDepth = state.order_depths[product]
-            bidPrice = state.observations.conversionObservations.bidPrice
-            askPrice = state.observations.conversionObservations.askPrice
-            transportFees = state.observations.conversionObservations.transportFees
-            exportTariff = state.observations.conversionObservations.exportTariff
-            importTariff = state.observations.conversionObservations.importTariff
-            sunlight = state.observations.conversionObservations.sunlight
-            humidity = state.observations.conversionObservations.humidity
+            bidPrice = observations.conversionObservations[product].bidPrice
+            """ 
+            bidPrice = state.observations.conversionObservations.bidPrice[product]
+            askPrice = state.observations.conversionObservations.askPrice[product]
+            transportFees = state.observations.conversionObservations.transportFees[product]
+            exportTariff = state.observations.conversionObservations.exportTariff[product]
+            importTariff = state.observations.conversionObservations.importTariff[product]
+            sunlight = state.observations.conversionObservations.sunlight[product]
+            humidity = state.observations.conversionObservations.humidity[product]
+            """
             orders: List[Order] = []
             acceptable_price = 10;  # Participant should calculate this value
             print("Acceptable price : " + str(acceptable_price))
