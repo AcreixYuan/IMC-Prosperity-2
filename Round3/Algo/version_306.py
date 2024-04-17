@@ -131,13 +131,13 @@ class Logger:
 class Trader:
     # define data members
     def __init__(self):
-        self.position_limit = {"AMETHYSTS": 20, "STARFRUIT": 20,"ORCHIDS": 100}
+        self.position_limit = {"AMETHYSTS": 20, "STARFRUIT": 20,"ORCHIDS": 100, "CHOCOLATE": 250, "STRAWBERRIES" : 350, "ROSES":60, "GIFT_BASKETS":60}
         self.last_mid_price = {'AMETHYSTS': 10000, 'STARFRUIT': 5000}
         self.mid_price = {'AMETHYSTS': {0: 10000}, 'STARFRUIT': {0: 5000}}
         self.ma_price = {'AMETHYSTS': {0: 10000}, 'STARFRUIT': {0: 5000}}
         self.ema_price = {'AMETHYSTS': {0: 10000}, 'STARFRUIT': {0: 5000}}
         self.price_history = {'AMETHYSTS': deque(maxlen=20), 'STARFRUIT': deque(maxlen=20)}  # 设置历史长度为 20
-        self.positions = {"ORCHIDS": 0}  # Current position in ORCHIDS
+        self.positions = {"ORCHIDS": 0, "AMETHYSTS": 0, "STARFRUIT": 0,"ORCHIDS": 0, "CHOCOLATE": 0, "STRAWBERRIES" : 0, "ROSES":0, "GIFT_BASKETS":0}  # Current position in ORCHIDS
         
     def market_status(self, state: TradingState, product) -> int:
         order_depth: OrderDepth = state.order_depths[product]
@@ -156,6 +156,15 @@ class Trader:
         if len(self.price_history[product]) > 0:
             return sum(self.price_history[product]) / len(self.price_history[product])
         return price
+    
+    def list_prices_above_threshold(self, price_dict, threshold):
+        """ Returns a list of prices that are above the specified threshold """
+        return [price for price in sorted(price_dict.keys()) if price >= threshold]
+    
+    def list_prices_below_threshold(self, price_dict, threshold):
+        """ Returns a list of prices that are below the specified threshold """
+        return [price for price in sorted(price_dict.keys(), reverse=True) if price <= threshold]
+
 
     def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]: 
         # Initialize the method output dict as an empty dict
@@ -256,12 +265,20 @@ class Trader:
                 conversions = 0  # This will be used to indicate how much we want to convert (sell) to the other island
                 logger.print(f"Current state: {state}")
                 
-                # Current state updates
-                order_depth = state.order_depths["ORCHIDS"]
                 self.buy_orders = order_depth.buy_orders
                 self.sell_orders = order_depth.sell_orders
-                self.bidPrice = max(order_depth.buy_orders.keys(), default=0)
-                self.askPrice = min(order_depth.sell_orders.keys(), default=float('inf'))
+
+                sorted_bid_prices = sorted(order_depth.buy_orders.keys(), reverse=True)
+                sorted_ask_prices = sorted(order_depth.sell_orders.keys())
+
+                self.bidPrice = sorted_bid_prices[0] if len(sorted_bid_prices) > 0 else 0
+                self.secondbidPrice = sorted_bid_prices[1] if len(sorted_bid_prices) > 1 else 0
+                self.thirdbidPrice = sorted_bid_prices[2] if len(sorted_bid_prices) > 2 else 0
+
+                self.askPrice = sorted_ask_prices[0] if len(sorted_ask_prices) > 0 else float('inf')
+                self.secondaskPrice = sorted_ask_prices[1] if len(sorted_ask_prices) > 1 else float('inf')
+                self.thirdaskPrice = sorted_ask_prices[2] if len(sorted_ask_prices) > 2 else float('inf')
+
                 self.conversionbid = state.observations.conversionObservations['ORCHIDS'].bidPrice
                 self.conversionask = state.observations.conversionObservations['ORCHIDS'].askPrice
                 self.transportFees = state.observations.conversionObservations['ORCHIDS'].transportFees
@@ -281,33 +298,186 @@ class Trader:
                 logger.print(f"Current position: {self.positions['ORCHIDS']}")
 
                 # maintaining position to avoid position limits
-                conversions = -(self.positions['ORCHIDS'] + 1)
+                conversions = -self.positions['ORCHIDS']
 
+
+                # One-side market making
+                self.worst_bidPrice = sorted_bid_prices[-1] if len(sorted_bid_prices) > 0 else 0
+                if adjusted_conversion_ask + 2.5 >= self.worst_bidPrice and adjusted_conversion_ask + 2.5 <= self.askPrice:
+                    logger.print(f"Market making opportunity found! Selling on Local island. ")
+                    # set sell price at adjusted_conversion_ask + 3, place sell order and clear the market above this price
+                    # list all the prices above adjusted_conversion_ask + 3
+                    prices_above_threshold = self.list_prices_above_threshold(order_depth.buy_orders, adjusted_conversion_ask + 2.5)
+                    logger.print(f"Prices above threshold: {prices_above_threshold}")
+                    quantity_to_sell = 0
+                    if len(prices_above_threshold) > 0:
+                        for price in prices_above_threshold:
+                            logger.print(f"Selling Price: {price}")
+                            quantity_to_sell += order_depth.buy_orders[int(round(price))]
+                    if quantity_to_sell > 0:
+                        orders.append(Order("ORCHIDS", int(round(adjusted_conversion_ask+2.5)), -quantity_to_sell))
+                        logger.print(f"Sellinging {quantity_to_sell} ORCHIDS at price {int(adjusted_conversion_ask+2.5)}")
+                        self.positions['ORCHIDS'] -= quantity_to_sell
+                        conversions = quantity_to_sell
+                        self.positions['ORCHIDS'] += conversions
+                
+                # the other side of the trade
+                self.worst_askPrice = sorted_ask_prices[-1] if len(sorted_ask_prices) > 0 else float('inf')
+                if adjusted_conversion_bid - 2 <= self.worst_askPrice and adjusted_conversion_bid - 2 >= self.askPrice:
+                    logger.print(f"Market making opportunity found! Buying on Local island. ")
+                    # set buy price at adjusted_conversion_bid - 3, place buy order and clear the market below this price
+                    # list all the prices below adjusted_conversion_bid - 3
+                    prices_below_threshold = self.list_prices_below_threshold(order_depth.sell_orders, adjusted_conversion_bid - 2)
+                    logger.print(f"Prices below threshold: {prices_below_threshold}")
+                    quantity_to_buy = 0
+                    if len(prices_below_threshold) > 0:
+                        for price in prices_below_threshold:
+                            logger.print(f"Buying Price: {price}")
+                            quantity_to_buy += order_depth.sell_orders[int(round(price))]
+                    if quantity_to_buy > 0:
+                        orders.append(Order("ORCHIDS", int(round(adjusted_conversion_bid-2)), quantity_to_buy))
+                        logger.print(f"Buying {quantity_to_buy} ORCHIDS at price {int(adjusted_conversion_bid-2)}")
+                        self.positions['ORCHIDS'] += quantity_to_buy
+                        conversions = -quantity_to_buy
+                        self.positions['ORCHIDS'] -= conversions
+                
+                '''
                 # arbitrage opportunity
-                if self.bidPrice > adjusted_conversion_ask + 0.5:
+                # being more ambitious with three levels of bid prices
+                if self.bidPrice > adjusted_conversion_ask + 2:
                     # Calculate quantity to buy based on position limits
-                    logger.print(f"Arbitrage opportunity found! Selling on Local island")
+                    logger.print(f"Arbitrage opportunity found! Selling on Local island. ")
 
                     quantity_to_sell = min(self.position_limit['ORCHIDS'] + self.positions['ORCHIDS'], order_depth.buy_orders[self.bidPrice])
+
+                    if self.secondbidPrice > adjusted_conversion_ask + 0.5:
+                        quantity_to_sell += min(self.position_limit['ORCHIDS'] + self.positions['ORCHIDS'], order_depth.buy_orders[self.secondbidPrice])
+                    
+                        if self.thirdbidPrice > adjusted_conversion_ask + 0.25:
+                            quantity_to_sell += min(self.position_limit['ORCHIDS'] + self.positions['ORCHIDS'], order_depth.buy_orders[self.thirdbidPrice])
+
                     if quantity_to_sell> 0:
                         orders.append(Order("ORCHIDS", self.bidPrice, -quantity_to_sell))
                         logger.print(f"Sellinging {quantity_to_sell} ORCHIDS at price {self.bidPrice}")
                         self.positions['ORCHIDS'] -= quantity_to_sell
 
-                        conversions = quantity_to_sell
+                        conversions = -quantity_to_sell
+                        self.positions['ORCHIDS'] += conversions
+                
+                # other side of the trade
+                if self.askPrice < adjusted_conversion_bid - 1:
+                    # Calculate quantity to buy based on position limits
+                    logger.print(f"Arbitrage opportunity found! Buying on Local island. ")
+
+                    quantity_to_buy = min(self.position_limit['ORCHIDS'] + self.positions['ORCHIDS'], order_depth.sell_orders[self.askPrice])
+
+                    if self.secondaskPrice < adjusted_conversion_bid - 0.5:
+                        quantity_to_buy += min(self.position_limit['ORCHIDS'] + self.positions['ORCHIDS'], order_depth.sell_orders[self.secondaskPrice])
+                    
+                        if self.thirdaskPrice < adjusted_conversion_bid - 0.25:
+                            quantity_to_buy += min(self.position_limit['ORCHIDS'] + self.positions['ORCHIDS'], order_depth.sell_orders[self.thirdaskPrice])
+
+                    if quantity_to_buy> 0:
+                        orders.append(Order("ORCHIDS", self.askPrice, quantity_to_buy))
+                        logger.print(f"Buying {quantity_to_buy} ORCHIDS at price {self.askPrice}")
+                        self.positions['ORCHIDS'] += quantity_to_buy
+
+                        conversions = quantity_to_buy
+                        self.positions['ORCHIDS'] -= conversions
+                '''
 
 
 
-
-                result["ORCHIDS"] = orders
+                result[product] = orders
                 traderData = "Updated trader data to maintain state across runs"  # Store any state data if needed
                 # update position information
-                self.positions['ORCHIDS'] += conversions
+                self.positions[product] += conversions
                 logger.print(f"Result: {result}, Conversions: {conversions}, Trader Data: {traderData}")
+            elif product == 'STRAWBERRIES':
+                order_depth: OrderDepth = state.order_depths[product]
+                orders: List[Order] = []
+                acceptable_price = 10  # Participant should calculate this value
+                logger.print("Acceptable price : " + str(acceptable_price))
+                logger.print("Buy Order depth : " + str(len(order_depth.buy_orders)) + ", Sell order depth : " + str(len(order_depth.sell_orders)))
         
+                if len(order_depth.sell_orders) != 0:
+                    best_ask, best_ask_amount = list(order_depth.sell_orders.items())[0]
+                    if int(best_ask) < acceptable_price:
+                        logger.print("BUY", str(-best_ask_amount) + "x", best_ask)
+                        orders.append(Order(product, best_ask, -best_ask_amount))
+        
+                if len(order_depth.buy_orders) != 0:
+                    best_bid, best_bid_amount = list(order_depth.buy_orders.items())[0]
+                    if int(best_bid) > acceptable_price:
+                        logger.print("SELL", str(best_bid_amount) + "x", best_bid)
+                        orders.append(Order(product, best_bid, -best_bid_amount))
+                
+                result[product] = orders
+            elif product == 'CHOCOLATE':
+                order_depth: OrderDepth = state.order_depths[product]
+                orders: List[Order] = []
+                acceptable_price = 10  # Participant should calculate this value
+                logger.print("Acceptable price : " + str(acceptable_price))
+                logger.print("Buy Order depth : " + str(len(order_depth.buy_orders)) + ", Sell order depth : " + str(len(order_depth.sell_orders)))
+        
+                if len(order_depth.sell_orders) != 0:
+                    best_ask, best_ask_amount = list(order_depth.sell_orders.items())[0]
+                    if int(best_ask) < acceptable_price:
+                        logger.print("BUY", str(-best_ask_amount) + "x", best_ask)
+                        orders.append(Order(product, best_ask, -best_ask_amount))
+        
+                if len(order_depth.buy_orders) != 0:
+                    best_bid, best_bid_amount = list(order_depth.buy_orders.items())[0]
+                    if int(best_bid) > acceptable_price:
+                        logger.print("SELL", str(best_bid_amount) + "x", best_bid)
+                        orders.append(Order(product, best_bid, -best_bid_amount))
+                
+                result[product] = orders
+            elif product == 'ROSES':
+                order_depth: OrderDepth = state.order_depths[product]
+                orders: List[Order] = []
+                acceptable_price = 10  # Participant should calculate this value
+                logger.print("Acceptable price : " + str(acceptable_price))
+                logger.print("Buy Order depth : " + str(len(order_depth.buy_orders)) + ", Sell order depth : " + str(len(order_depth.sell_orders)))
+        
+                if len(order_depth.sell_orders) != 0:
+                    best_ask, best_ask_amount = list(order_depth.sell_orders.items())[0]
+                    if int(best_ask) < acceptable_price:
+                        logger.print("BUY", str(-best_ask_amount) + "x", best_ask)
+                        orders.append(Order(product, best_ask, -best_ask_amount))
+        
+                if len(order_depth.buy_orders) != 0:
+                    best_bid, best_bid_amount = list(order_depth.buy_orders.items())[0]
+                    if int(best_bid) > acceptable_price:
+                        logger.print("SELL", str(best_bid_amount) + "x", best_bid)
+                        orders.append(Order(product, best_bid, -best_bid_amount))
+                
+                result[product] = orders
+            elif product == 'GIFT_BASKETS':
+                order_depth: OrderDepth = state.order_depths[product]
+                orders: List[Order] = []
+                acceptable_price = 10  # Participant should calculate this value
+                logger.print("Acceptable price : " + str(acceptable_price))
+                logger.print("Buy Order depth : " + str(len(order_depth.buy_orders)) + ", Sell order depth : " + str(len(order_depth.sell_orders)))
+        
+                if len(order_depth.sell_orders) != 0:
+                    best_ask, best_ask_amount = list(order_depth.sell_orders.items())[0]
+                    if int(best_ask) < acceptable_price:
+                        logger.print("BUY", str(-best_ask_amount) + "x", best_ask)
+                        orders.append(Order(product, best_ask, -best_ask_amount))
+        
+                if len(order_depth.buy_orders) != 0:
+                    best_bid, best_bid_amount = list(order_depth.buy_orders.items())[0]
+                    if int(best_bid) > acceptable_price:
+                        logger.print("SELL", str(best_bid_amount) + "x", best_bid)
+                        orders.append(Order(product, best_bid, -best_bid_amount))
+                
+                result[product] = orders
+                
+        self.last_mid_price = {'AMETHYSTS': 10000, 'STARFRUIT': 5000}
         # String value holding Trader state data required.
         # It will be delivered as TradingState.traderData on next execution.
-        traderData = "SAMPLE"
+        traderData = ""
 
         # = 1
         logger.flush(state, result, conversions, traderData)
