@@ -3,6 +3,11 @@ from datamodel import Listing, UserId, Observation, Order, OrderDepth, Prosperit
 from typing import Any
 from typing import List
 import string
+from collections import deque
+import numpy as np
+
+
+alpha1 = 1.0;alpha2 =  0.1; N1 = 7; N2 = 30
 
 class Logger:
     def __init__(self) -> None:
@@ -111,39 +116,65 @@ logger = Logger()
 
 
 
-from datamodel import OrderDepth, UserId, TradingState, Order
-from typing import List
-import string
+
 
 class Trader:
-    
+    def __init__(self):
+        self.position_limit = {"AMETHYSTS": 20, "STARFRUIT": 20, "ORCHIDS": 100, "CHOCOLATE": 250, "STRAWBERRIES": 350,
+                               "ROSES": 60, "GIFT_BASKETS": 60}
+        self.last_mid_price = {'AMETHYSTS': 10000, 'STARFRUIT': 5000}
+        self.mid_price = {'AMETHYSTS': {0: 10000}, 'STARFRUIT': {0: 5000}}
+        self.ma_price = {'AMETHYSTS': {0: 10000}, 'STARFRUIT': {0: 5000}}
+        self.ema_price = {'AMETHYSTS': {0: 10000}, 'STARFRUIT': {0: 5000}}
+        self.price_history = {'AMETHYSTS': deque(maxlen=20), 'STARFRUIT': deque(maxlen=20)}  # 设置历史长度为 20
+        self.positions = {"ORCHIDS": 0, "AMETHYSTS": 0, "STARFRUIT": 0,  "CHOCOLATE": 0, "STRAWBERRIES": 0,
+                          "ROSES": 0, "GIFT_BASKETS": 0}  # Current position in ORCHIDS
+
+    def market_status(self, state: TradingState, product) -> int:
+        order_depth: OrderDepth = state.order_depths[product]
+        if len(order_depth.sell_orders) != 0 and len(order_depth.buy_orders) != 0:
+            best_ask_volume = order_depth.sell_orders[min(order_depth.sell_orders.keys())]
+            best_bid_volume = order_depth.buy_orders[max(order_depth.buy_orders.keys())]
+            if best_ask_volume >= 15 and best_bid_volume <15:
+                return -1
+            elif best_ask_volume < 15 and best_bid_volume >=15:
+                return 1
+            else:
+                return 0
+
     def run(self, state: TradingState):
         logger.print("traderData: " + state.traderData)
         logger.print("Observations: " + str(state.observations))
 
-		# Orders to be placed on exchange matching engine
+        order_depth: OrderDepth = state.order_depths[product]
+
         result = {}
         for product in state.order_depths:
-            order_depth: OrderDepth = state.order_depths[product]
+            if product in state.position.keys():
+                current_position = state.position[product]
+            else:
+                current_position = 0
+
+            legal_buy_vol = np.minimum(self.position_limit[product] - current_position, self.position_limit[product])
+            legal_sell_vol = np.maximum(-(self.position_limit[product] + current_position),
+                                        -self.position_limit[product])
+
             orders: List[Order] = []
-            acceptable_price = 10  # Participant should calculate this value
-            logger.print("Acceptable price : " + str(acceptable_price))
-            logger.print("Buy Order depth : " + str(len(order_depth.buy_orders)) + ", Sell order depth : " + str(len(order_depth.sell_orders)))
-    
-            if len(order_depth.sell_orders) != 0:
-                best_ask, best_ask_amount = list(order_depth.sell_orders.items())[0]
-                if int(best_ask) < acceptable_price:
-                    logger.print("BUY", str(-best_ask_amount) + "x", best_ask)
-                    orders.append(Order(product, best_ask, -best_ask_amount))
-    
-            if len(order_depth.buy_orders) != 0:
-                best_bid, best_bid_amount = list(order_depth.buy_orders.items())[0]
-                if int(best_bid) > acceptable_price:
-                    logger.print("SELL", str(best_bid_amount) + "x", best_bid)
-                    orders.append(Order(product, best_bid, -best_bid_amount))
-            
-            result[product] = orders
-    
+            if product=='AMETHYSTS':
+                logger.print('AMETHYSTS')
+            elif product=='STARFRUIT':
+                logger.print('STARFRUIT')
+            elif product=='ORCHIDS':
+                logger.print('ORCHIDS')
+            elif product=='CHOCOLATE':
+                logger.print('CHOCOLATE')
+            elif product=='STRAWBERRIES':
+                logger.print('STRAWBERRIES')
+            elif product=='ROSES':
+                logger.print('ROSES')
+            elif product=='GIFT_BASKETS':
+                logger.print('GIFT_BASKETS')
+
 		    # String value holding Trader state data required. 
 				# It will be delivered as TradingState.traderData on next execution.
         trader_data = "SAMPLE" 
