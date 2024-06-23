@@ -146,6 +146,7 @@ class Trader:
         buy_dict = order_depth.buy_orders
         orders: list[Order] = []
 
+        
         if len(sell_dict) > 0:
             best_ask = min(sell_dict.keys())
             best_ask_volume = sell_dict[best_ask]
@@ -485,6 +486,7 @@ class Trader:
             
     def run(self, state: TradingState):
         """
+
         Only method required. It takes all buy and sell orders for all symbols as an input,
         and outputs a list of orders to be sent
         """
