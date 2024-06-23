@@ -1,10 +1,13 @@
-# IMC-Prosperity-2
+# IMC Prosperity 2
 
-Our repo for IMC Prosperity 2 Market Making Game
+This is our repo for the Participation in IMC Prosperity Round 2. 
 
+All the research and the code associated with it is in the corresponding Repos.
 
-Next Steps:
+Eventually we ranked 368th and were 104th in the US. 
 
-* Implement the code/ideas from the stanford Cardinals
-* Get the orderbook granularity from Alston runnnig and understand it.
-* Find a better way how to summarize the research in a better file structure.
+The topics of each round where the following:
+
+* Round 1: Ther were 2 differen assets to trade. One of them was momentum based, the other one was mean reverting. We implemented a mean reverting trading strategy and a momentum strategy.
+
+* Round 2: 
