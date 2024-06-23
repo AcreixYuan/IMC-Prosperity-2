@@ -289,6 +289,7 @@ class Trader:
                 best_bid_volume = order_depth.buy_orders[best_bid]
                 mid_price = (best_ask * np.abs(best_ask_volume) + best_bid * np.abs(best_bid_volume)) / (
                         np.abs(best_ask_volume) + np.abs(best_bid_volume))
+                acceptable_price =
                 self.mid_price[product][state.timestamp] = mid_price
 
 		    # String value holding Trader state data required. 
